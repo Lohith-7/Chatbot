@@ -3,8 +3,10 @@ from pydantic import BaseModel
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import requests
+from typing import Optional
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
+from app.lab_values import lab_value
 
 app = FastAPI()
 
@@ -13,6 +15,18 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 class chat_message(BaseModel):
     message: str
+
+    location: Optional[str] = None
+
+    heart_rate: Optional[int] = None
+    sleep_hours: Optional[float] = None
+    steps: Optional[int] = None
+
+    blood_sugar: Optional[float] = None
+    hemoglobin: Optional[float] = None
+
+    sleep_quality: Optional[str] = None
+    stress_level: Optional[str] = None
 
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -45,9 +59,14 @@ def get_medical_context(query, diseases):
         docs = medquad_db.similarity_search(disease, k=1)
 
         for doc in docs:
-            context += doc.page_content + "\n\n"
+            text = doc.page_content
+            text = text.replace("Disease:", "")
+            text = text.replace("Question:", "")
+            text = text.replace("Answer:", "")
 
-    return context[:1500]
+            context += text.strip() + "\n\n"
+
+        return context[:1200]
 
 
 #routes
@@ -57,27 +76,47 @@ def home(request: Request):
 
 @app.post("/chat")
 def chat(req: chat_message):
-    diseases = get_top_diseases(req.message)
+    lab_context = lab_value(
+        blood_sugar=req.blood_sugar,
+        hemoglobin=req.hemoglobin
+    )
+    lab_data = lab_context["text"]
+    lab_hints = lab_context["hints"]
+
+    diseases = get_top_diseases(req.message + " " + " ".join(lab_hints))
+
+    diseases = list(set(diseases + lab_hints))
 
     context = get_medical_context(req.message, diseases)
 
+
+
     system_prompt = f"""
     You are a medical assistant.
-
-    User symptoms: {req.message}
-
-    Possible diseases:
+    
+    Patient symptoms:
+    {req.message}
+    
+    Possible conditions:
     {", ".join(diseases)}
-
-    Medical knowledge:
+    
+    Medical context:
     {context}
     
+    Lab findings:
+    {lab_context}
+    
     Instructions:
-    - If they say hi greet them first do not expect a disease or create one to say them
-    - Suggest likely conditions
-    - Explain briefly
-    - Do NOT give final diagnosis
-    - Always recommend consulting a doctor
+    
+    - Give short and clear explanation
+    - Prioritize lab findings if available
+    - Mention only relevant conditions
+    - Avoid unnecessary technical details
+    - Do NOT mention unrelated diseases
+    - Do NOT repeat the same idea multiple times
+    - Use simple language
+    - Limit response to 5 sentences maximum
+    - Always suggest consulting a doctor
     """
 
     payload = {
